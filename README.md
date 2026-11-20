@@ -7,18 +7,21 @@ viscoelasticidade linear 1D.
 
 - Modelos reológicos: **Maxwell**, **Kelvin-Voigt** e **Sólido Linear Padrão** (Zener).
 - Históricos de carregamento: fluência (tensão constante), relaxação (deformação constante),
-  fluência e recuperação, histórico de tensão personalizado (tabela de pontos, resolvido pela
-  integral hereditária de Boltzmann) e carga senoidal.
+  fluência e recuperação, históricos personalizados de tensão ou de deformação (tabela de pontos,
+  resolvidos pela integral hereditária de Boltzmann, com solução fechada por trechos) e carga
+  senoidal.
 - Comparação dos três modelos sob o mesmo carregamento.
 - Animação do modelo mecânico: molas e amortecedores se deformam ao longo do tempo,
   sincronizados com a curva de resposta.
-- Deformação e tensão em cada componente (mola e amortecedor).
+- Deformação, tensão e energia (armazenada nas molas e dissipada no amortecedor) em cada
+  componente.
 - Solução analítica passo a passo com `sympy` (transformada de Laplace, frações parciais,
   inversa, funções de fluência e relaxação, verificação pelos limites, forma integral) antes da
   substituição numérica. Na carga senoidal, a solução completa inclui o transitório.
 - Análise dinâmica (DMTA): módulo de armazenamento E′, módulo de perda E″, tan δ, laço de
   histerese, energia dissipada por ciclo e varredura em frequência.
 - Exportação dos resultados em CSV.
+- Aba "Sobre e como usar" com hipóteses, convenções e roteiro de uso.
 
 ## Estrutura
 

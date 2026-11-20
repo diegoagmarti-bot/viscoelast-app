@@ -15,11 +15,16 @@ ENSAIOS = {
     "Fluência (tensão constante)": "fluencia",
     "Relaxação (deformação constante)": "relaxacao",
     "Fluência e recuperação": "recuperacao",
-    "Histórico de tensão personalizado": "personalizado",
+    "Histórico personalizado de tensão": "hist_tensao",
+    "Histórico personalizado de deformação": "hist_deformacao",
     "Carga senoidal (DMTA)": "senoidal",
 }
-HISTORICO_PADRAO = pd.DataFrame({"t (s)": [0.0, 5.0, 15.0, 15.0, 30.0],
-                                 "σ (MPa)": [0.0, 10.0, 10.0, 0.0, 0.0]})
+HISTORICOS = {
+    "hist_tensao": pd.DataFrame({"t (s)": [0.0, 5.0, 15.0, 15.0, 30.0],
+                                 "σ (MPa)": [0.0, 10.0, 10.0, 0.0, 0.0]}),
+    "hist_deformacao": pd.DataFrame({"t (s)": [0.0, 5.0, 15.0, 20.0, 30.0],
+                                     "ε (%)": [0.0, 0.5, 0.5, 0.0, 0.0]}),
+}
 CORES = [COR_MOLA, COR_AMORT, "#4F8A5B", "#7A5C99"]
 GRADE = dict(showgrid=True, gridcolor="#E6E9EE")
 N_PONTOS = 1200
@@ -65,7 +70,7 @@ def residual(nome, E_, eta_, Einf_, s0, t_rem):
 
 def num(expr, valores):
     """Substitui os valores numéricos e arredonda para exibição."""
-    return sp.N(expr.subs(valores), 4)
+    return m.arredondar(expr.subs(valores))
 
 
 def fmt_lim(x, pct=False):
@@ -106,15 +111,18 @@ with st.sidebar:
         ciclos = st.slider("Número de ciclos exibidos", 1, 10, 3)
         omega = 2 * np.pi * freq
         t_final = ciclos / freq
-    elif ensaio == "personalizado":
-        st.caption("Pontos (tempo, tensão) ligados por retas. Repita o tempo para criar um degrau.")
-        tabela = st.data_editor(HISTORICO_PADRAO, num_rows="dynamic", hide_index=True, width="stretch")
+    elif ensaio in HISTORICOS:
+        st.caption("Pontos ligados por retas. Repita o tempo para criar um degrau.")
+        tabela = st.data_editor(HISTORICOS[ensaio], num_rows="dynamic", hide_index=True, width="stretch",
+                                key=f"tabela_{ensaio}")
         tabela = tabela.dropna().astype(float).sort_values("t (s)", kind="stable")
         tabela = tabela[tabela["t (s)"] >= 0]
         if len(tabela) < 2 or tabela["t (s)"].max() <= 0:
             st.error("Informe ao menos dois pontos, com tempos não negativos.")
             st.stop()
-        historico = (tuple(tabela["t (s)"]), tuple(tabela["σ (MPa)"]))
+        coluna = tabela.columns[1]
+        escala = 0.01 if ensaio == "hist_deformacao" else 1.0  # deformação digitada em %
+        historico = (tuple(tabela["t (s)"]), tuple(tabela[coluna] * escala))
         t_final = float(tabela["t (s)"].max())
     else:
         t_final = st.number_input("Tempo total de análise (s)", min_value=1e-6, value=round(6 * tau, 4),
@@ -126,11 +134,15 @@ with st.sidebar:
         t_rem = st.number_input("Instante de remoção da carga, t1 (s)", min_value=1e-6,
                                 max_value=float(t_final), format="%.4g", key="t1")
 
+    if ensaio != "senoidal" and not 2 <= t_final / tau <= 30:
+        st.info(f"O tempo total equivale a {t_final / tau:.3g} τ. Para ver bem a resposta viscoelástica, "
+                f"use algo entre 3τ e 10τ (de {3 * tau:.3g} s a {10 * tau:.3g} s).", icon=":material/schedule:")
+
 # ---------------------------------------------------------------- simulação
 valores = valores_de(E_, eta_, Einf_, carga, ensaio, t_rem)
 tt, sig, eps = calcular(nome, ensaio, E_, eta_, Einf_, carga, t_final, t_rem, omega, historico)
 comp = m.componentes(nome, sig, eps, valores)
-controle_tensao = ensaio in ("fluencia", "recuperacao", "personalizado")
+controle_tensao = ensaio in ("fluencia", "recuperacao", "hist_tensao")
 resposta, rot_resp = (eps * 100, ROT_EPS) if controle_tensao else (sig, ROT_SIG)
 
 # ---------------------------------------------------------------- cabeçalho
@@ -148,11 +160,16 @@ if ensaio == "senoidal":
     c2.metric("E″, perda (MPa)", f"{Ep:.4g}", border=True)
     c3.metric("tan δ", f"{Ep / Ea:.4g}", border=True)
     c4.metric("Ângulo de fase δ (graus)", f"{np.degrees(np.arctan2(Ep, Ea)):.4g}", border=True)
-elif ensaio == "personalizado":
+elif ensaio == "hist_tensao":
     c1.metric(modelo["tau_nome"], f"{tau:.4g}", border=True)
     c2.metric("σ máxima aplicada (MPa)", f"{np.max(sig):.4g}", border=True)
     c3.metric("ε máxima (%)", f"{np.max(eps) * 100:.4g}", border=True)
     c4.metric("ε no fim da análise (%)", f"{eps[-1] * 100:.4g}", border=True)
+elif ensaio == "hist_deformacao":
+    c1.metric(modelo["tau_nome"], f"{tau:.4g}", border=True)
+    c2.metric("ε máxima aplicada (%)", f"{np.max(eps) * 100:.4g}", border=True)
+    c3.metric("σ máxima (MPa)", f"{np.max(sig):.4g}", border=True)
+    c4.metric("σ no fim da análise (MPa)", f"{sig[-1]:.4g}", border=True)
 else:
     tipo = "relaxacao" if ensaio == "relaxacao" else "fluencia"
     sol_d = m.solucao_degrau(nome, tipo)
@@ -172,6 +189,7 @@ abas = [":material/animation: Simulação", ":material/stacked_line_chart: Compo
         ":material/compare: Comparação de modelos", ":material/function: Solução analítica"]
 if ensaio == "senoidal":
     abas.append(":material/graphic_eq: Análise dinâmica (DMTA)")
+abas.append(":material/help: Sobre e como usar")
 tabs = st.tabs(abas)
 
 # ---------------------------------------------------------------- aba: simulação
@@ -182,6 +200,12 @@ with tabs[0]:
     forca = sig / (np.max(np.abs(sig)) or 1.0)
     fig = figura_animada(nome, tt, [c[0] for c in comp.values()], forca, resposta, rot_resp)
     st.plotly_chart(fig, width="stretch")
+    if nome == "Kelvin-Voigt" and ensaio == "hist_deformacao" and any(
+            ta == tb and va != vb for ta, tb, va, vb in zip(historico[0], historico[0][1:],
+                                                         historico[1], historico[1][1:])):
+        st.info("O histórico tem um degrau de deformação. No Kelvin-Voigt isso exige uma tensão "
+                "impulsiva (infinita por um instante) no amortecedor, que não aparece no gráfico. "
+                "Use uma rampa curta no lugar do degrau para ver um pico finito.", icon=":material/info:")
     if nome == "Kelvin-Voigt" and ensaio == "relaxacao":
         st.info("No modelo de Kelvin-Voigt, impor um degrau de deformação exige uma tensão impulsiva "
                 "η ε0 δ(t) em t = 0, pois o amortecedor não pode se deformar instantaneamente. "
@@ -195,8 +219,13 @@ with tabs[1]:
         f.add_trace(go.Scatter(x=tt, y=sig, name="Tensão σ (MPa)", line=dict(color=COR_MOLA)))
         f.add_trace(go.Scatter(x=tt, y=eps * 100, name="Deformação ε (%)", yaxis="y2",
                                line=dict(color=COR_AMORT)))
-        f.update_layout(xaxis_title="Tempo, t (s)", yaxis_title=ROT_SIG,
-                        yaxis2=dict(title=ROT_EPS, overlaying="y", side="right", showgrid=False))
+        # mesma posição do zero nos dois eixos
+        s_max, e_max = max(np.max(sig), 1e-12), max(np.max(eps) * 100, 1e-12)
+        r = min(0.0, np.min(sig) / s_max, np.min(eps) * 100 / e_max)
+        f.update_layout(xaxis_title="Tempo, t (s)",
+                        yaxis=dict(title=ROT_SIG, range=[1.08 * r * s_max, 1.08 * s_max]),
+                        yaxis2=dict(title=ROT_EPS, overlaying="y", side="right", showgrid=False,
+                                    range=[1.08 * r * e_max, 1.08 * e_max]))
         st.plotly_chart(f, width="stretch")
     with b:
         f = grafico(title="Deformação em cada componente")
@@ -212,6 +241,17 @@ with tabs[1]:
     st.caption("A mola responde instantaneamente (σ = E ε). O amortecedor responde à taxa de "
                "deformação (σ = η dε/dt). Em série, os elementos compartilham a tensão e somam as "
                "deformações; em paralelo, compartilham a deformação e somam as tensões.")
+
+    ener = m.energias(comp)
+    f = grafico(title="Energia por unidade de volume")
+    for (rot, e_v), cor in zip(ener.items(), CORES):
+        f.add_trace(go.Scatter(x=tt, y=e_v * 1000, name=rot, line=dict(color=cor)))
+    f.add_trace(go.Scatter(x=tt, y=sum(ener.values()) * 1000, name="Total (trabalho externo)",
+                           line=dict(color="#2B2B2B", dash="dash")))
+    f.update_layout(xaxis_title="Tempo, t (s)", yaxis_title="Energia (kJ/m³)")
+    st.plotly_chart(f, width="stretch")
+    st.caption("As molas armazenam energia (½ σ ε), que é devolvida quando descarregam. O amortecedor "
+               "dissipa energia (integral de σ dε), que nunca volta. Por isso a energia dissipada só cresce.")
 
     dados = {"t (s)": tt, "sigma (MPa)": sig, "epsilon (mm/mm)": eps}
     for rot, (e_c, s_c) in comp.items():
@@ -236,7 +276,7 @@ with tabs[2]:
             Ep_n = float(sol_n["E_perda"].subs(valores).subs(m.w, omega))
             linhas.append({"Modelo": nm, "E′ (MPa)": f"{Ea_n:.4g}", "E″ (MPa)": f"{Ep_n:.4g}",
                            "tan δ": f"{Ep_n / Ea_n:.4g}"})
-        elif ensaio != "personalizado":
+        elif ensaio not in HISTORICOS:
             sol_n = m.solucao_degrau(nm, "relaxacao" if ensaio == "relaxacao" else "fluencia")
             un = "σ (MPa)" if ensaio == "relaxacao" else "ε (%)"
             linhas.append({"Modelo": nm,
@@ -267,7 +307,7 @@ def substituicao(n, *exprs):
     exibir.update({k: v for k, v in valores.items() if k in (m.sig0, m.eps0, m.t1)})
     if omega is not None:
         exibir[m.w] = omega
-    nums = ", \\quad ".join(f"{m.tex(k)} = {float(v):.4g}" for k, v in exibir.items())
+    nums = ", \\quad ".join(f"{m.tex(k)} = {float(v):.6g}" for k, v in exibir.items())
     passo(n, "Substituição numérica dos parâmetros informados (tensões em MPa, deformações em mm/mm, "
              "tempo em s):", nums, *exprs)
 
@@ -281,7 +321,7 @@ with tabs[3]:
           rf"P(s) = {m.tex(P)}, \qquad Q(s) = {m.tex(Q)}")
 
     if ensaio != "senoidal":
-        tipo = "relaxacao" if ensaio == "relaxacao" else "fluencia"
+        tipo = "relaxacao" if ensaio in ("relaxacao", "hist_deformacao") else "fluencia"
         sol = m.solucao_degrau(nome, tipo)
         if tipo == "fluencia":
             ent, sai, lado, amp = r"\sigma(t) = \sigma_0\,H(t)", r"\bar{\varepsilon}(s)", r"\varepsilon(t)", m.sig0
@@ -292,9 +332,9 @@ with tabs[3]:
             fun, fun_nome, ent_s = "G", "relaxação", r"\bar{\varepsilon}(s)"
             razao = r"\frac{Q(s)}{P(s)}\,\bar{\varepsilon}(s)"
         texto2 = ("Carregamento aplicado (degrau, H é a função de Heaviside) e sua transformada de Laplace:"
-                  if ensaio != "personalizado" else
-                  "Para um histórico qualquer, primeiro obtém-se a função de fluência J(t), que é a resposta "
-                  "a um degrau de tensão (H é a função de Heaviside):")
+                  if ensaio not in HISTORICOS else
+                  f"Para um histórico qualquer, primeiro obtém-se a função de {fun_nome} {fun}(t), que é a "
+                  "resposta a um degrau (H é a função de Heaviside):")
         passo(2, texto2, ent + r"\quad \Longrightarrow \quad " + ent_s + " = " + m.tex(sol["entrada_s"]))
         passo(3, "Com condições iniciais nulas (t = 0⁻), a equação diferencial vira uma equação algébrica em s:",
               rf"{sai} = {razao} = " + m.tex(sol["saida_s"]))
@@ -322,14 +362,29 @@ with tabs[3]:
                   r"\varepsilon(t) = " + m.tex(descarga) + r", \qquad t \geq t_1")
             substituicao(9, r"\varepsilon(t) = " + m.tex(num(sol["saida_t"], valores)) + r", \qquad 0 < t < t_1",
                          r"\varepsilon(t) = " + m.tex(num(descarga, valores)) + r", \qquad t \geq t_1")
-        elif ensaio == "personalizado":
-            Jt = sp.expand(sol["saida_t"] / m.sig0)
-            passo(8, "Forma integral (hereditária). Pelo princípio de superposição de Boltzmann, cada "
-                     "incremento de tensão dσ(ξ) produz a resposta J(t − ξ) dσ(ξ). Para o histórico da "
-                     "tabela, a integral é avaliada numericamente como uma soma sobre a malha de tempo:",
-                  r"\varepsilon(t) = \int_{0^-}^{t} J(t-\xi)\,\frac{d\sigma(\xi)}{d\xi}\,d\xi"
-                  r"\;\approx\; \sum_{\xi_j \le t} J(t-\xi_j)\,\Delta\sigma_j")
-            substituicao(9, r"J(t) = " + m.tex(num(Jt, valores)) + r"\ \text{MPa}^{-1}")
+        elif ensaio in HISTORICOS:
+            F, F_int = m.funcoes_hereditarias(nome, "tensao" if tipo == "fluencia" else "deformacao")
+            x, dx = (r"\sigma", r"\Delta\sigma") if tipo == "fluencia" else (r"\varepsilon", r"\Delta\varepsilon")
+            passo(8, "Forma integral (hereditária). Pelo princípio de superposição de Boltzmann, cada incremento "
+                     f"de carregamento produz a resposta {fun}(t − ξ) vezes esse incremento. O histórico da tabela "
+                     "é linear por trechos: degraus Δ_k em a_k e rampas de taxa r_k entre a_k e b_k. A integral "
+                     "então tem solução fechada:",
+                  rf"{lado} = \int_{{0^-}}^{{t}} {fun}(t-\xi)\,\frac{{d{x}(\xi)}}{{d\xi}}\,d\xi"
+                  rf" = \sum_k {dx}_k\,{fun}(t-a_k) + \sum_k r_k\left[{fun}_{{int}}(t-a_k) - {fun}_{{int}}(t-b_k)\right]",
+                  rf"{fun}_{{int}}(t) = \int_0^t {fun}(u)\,du = " + m.tex(F_int))
+            st.caption("Cada termo só vale a partir do seu instante (t > a_k ou t > b_k). "
+                       + ("No Kelvin-Voigt, o impulso η δ(t) de G(t) contribui com a constante η em G_int."
+                          if nome == "Kelvin-Voigt" and tipo == "relaxacao" else ""))
+            degraus, rampas = m.trechos(historico)
+            itens = [f"degrau de {s_:.4g} em t = {a_:.4g} s" for a_, s_ in degraus]
+            itens += [f"rampa de taxa {r_:.4g}/s entre {a_:.4g} s e {b_:.4g} s" for a_, b_, r_ in rampas]
+            st.markdown("Decomposição do histórico (" + ("MPa" if tipo == "fluencia" else "mm/mm") + "): "
+                        + "; ".join(itens) + ".")
+            exprs = [rf"{lado} = " + m.tex(ex) + rf", \qquad {a_:.4g} \le t < " + (r"\infty" if b_ == sp.oo else f"{b_:.4g}")
+                     for a_, b_, ex in m.expressoes_por_intervalo(F, F_int, historico, valores)]
+            substituicao(9, *exprs)
+            if len(set(historico[0])) > 6:
+                st.caption("Exibidos apenas os seis primeiros intervalos. Os gráficos usam o histórico completo.")
         else:
             integral = (r"\varepsilon(t) = \int_{0^-}^{t} J(t-\xi)\,\frac{d\sigma(\xi)}{d\xi}\,d\xi"
                         if tipo == "fluencia" else
@@ -389,6 +444,12 @@ if ensaio == "senoidal":
                                    showlegend=False, fill="toself", fillcolor="rgba(31,78,121,0.08)"))
             f.update_layout(xaxis_title=ROT_EPS, yaxis_title=ROT_SIG)
             st.plotly_chart(f, width="stretch")
+            s_u, e_u = sig[ultimo], eps[ultimo]
+            area = abs(np.sum(0.5 * (s_u[1:] + s_u[:-1]) * np.diff(e_u)))
+            Ep_atual = float(m.solucao_senoidal(nome)["E_perda"].subs(valores).subs(m.w, omega))
+            st.caption(f"Área do laço (numérica): {area * 1000:.4g} kJ/m³. "
+                       f"Fórmula π E″ ε0²: {np.pi * Ep_atual * e0 ** 2 * 1000:.4g} kJ/m³. "
+                       "É a energia dissipada pelo amortecedor em cada ciclo.")
 
         ww = np.logspace(-2, 2, 300) / tau
         sol = m.solucao_senoidal(nome)
@@ -411,3 +472,34 @@ if ensaio == "senoidal":
                    "E″ mede a energia dissipada (resposta viscosa); tan δ = E″/E′ é o fator de "
                    "amortecimento. Em ensaios de DMTA esses parâmetros são medidos em função da "
                    "frequência e da temperatura.")
+
+# ---------------------------------------------------------------- aba: sobre
+with tabs[-1]:
+    st.markdown("""
+#### O que o aplicativo faz
+Resolve as equações constitutivas diferenciais e integrais da viscoelasticidade linear
+unidimensional para três modelos reológicos e mostra, passo a passo, a solução analítica
+obtida com álgebra simbólica (sympy) antes da substituição numérica.
+
+#### Hipóteses
+- Material linear: a resposta é proporcional ao carregamento e vale a superposição de Boltzmann.
+- Estado uniaxial (1D) e pequenas deformações.
+- Material inicialmente sem tensão nem deformação (condições iniciais nulas em t = 0⁻).
+
+#### Convenções e unidades
+- Tensão e módulos em MPa, viscosidade em MPa·s, tempo em s.
+- Deformação em % nos gráficos e tabelas, e em mm/mm na solução analítica.
+- Tração é positiva. Energia por unidade de volume: 1 MPa = 1 MJ/m³.
+- Os três modelos usam a mesma mola E e o mesmo amortecedor η, com τ = η/E.
+
+#### Como usar
+1. Na barra lateral, escolha o modelo e o histórico de carregamento.
+2. Informe os parâmetros do material e do carregamento. Nos históricos personalizados, edite a
+   tabela de pontos (tempo, valor); repetir um tempo cria um degrau.
+3. **Simulação:** use Reproduzir para ver molas e amortecedor se deformarem junto com a curva.
+4. **Componentes:** tensão, deformação e energia em cada elemento, e exportação dos dados em CSV.
+5. **Comparação de modelos:** os três modelos sob o mesmo carregamento.
+6. **Solução analítica:** dedução simbólica completa e substituição numérica.
+7. **Análise dinâmica (DMTA):** com a carga senoidal, E′, E″, tan δ, laço de histerese e
+   varredura em frequência.
+""")

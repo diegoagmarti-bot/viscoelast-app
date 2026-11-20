@@ -109,6 +109,12 @@ def solucao_senoidal(nome):
             "tan_d": sp.simplify(E_perda / E_arm)}
 
 
+def arredondar(expr, digitos=4):
+    """Avalia numericamente e arredonda todos os números para exibição."""
+    expr = sp.N(expr, 15)
+    return expr.xreplace({x: sp.Float(float(f"{float(x):.{digitos}g}"), digitos) for x in expr.atoms(sp.Float)})
+
+
 def numerica(expr, valores, var=t):
     """Converte uma expressão em função numpy vetorizada (impulsos de Dirac são descartados)."""
     expr = expr.subs(valores).replace(sp.DiracDelta, lambda *a: 0)
@@ -116,12 +122,78 @@ def numerica(expr, valores, var=t):
     return lambda x: np.asarray(f(x), dtype=float) * np.ones_like(x)
 
 
-def boltzmann(J, tt, sig):
-    """Integral hereditária eps(t) = soma de J(t - xi) * d(sigma)(xi) em uma malha uniforme."""
-    dsig = np.diff(sig, prepend=0.0)
-    atraso = tt[:, None] - tt[None, :]
-    ativo = atraso >= 0
-    return (J(np.where(ativo, atraso, 0.0)) * ativo) @ dsig
+@lru_cache(maxsize=None)
+def funcoes_hereditarias(nome, controle):
+    """Função de fluência J(t) ('tensao') ou de relaxação G(t) ('deformacao') e sua integral.
+
+    A integral F_int(t) = integral de 0 a t de F(u) du é a resposta a uma rampa de taxa unitária.
+    No Kelvin-Voigt, G(t) tem o impulso eta*delta(t), que contribui com a constante eta em F_int.
+    """
+    u = sp.Symbol("u", positive=True)
+    if controle == "tensao":
+        F = sp.expand(solucao_degrau(nome, "fluencia")["saida_t"] / sig0)
+        impulso = 0
+    else:
+        F = sp.expand(solucao_degrau(nome, "relaxacao")["saida_t"] / eps0)
+        (_, p1), (_, q1) = MODELOS[nome]["P"], MODELOS[nome]["Q"]
+        impulso = q1 if p1 == 0 else 0
+    F_int = sp.expand(sp.integrate(F.subs(t, u), (u, 0, t)) + impulso)
+    return F, F_int
+
+
+def trechos(historico):
+    """Converte pontos (tempo, valor) ligados por retas em degraus e rampas.
+
+    Retorna (degraus, rampas): degraus = [(a, salto)], rampas = [(a, b, taxa)].
+    Antes do primeiro ponto o valor é zero; depois do último, constante.
+    """
+    tempos, valores = historico
+    degraus, rampas = [], []
+    if valores[0] != 0:
+        degraus.append((tempos[0], valores[0]))
+    for (ta, va), (tb, vb) in zip(zip(tempos, valores), zip(tempos[1:], valores[1:])):
+        if tb == ta:
+            if vb != va:
+                degraus.append((ta, vb - va))
+        elif vb != va:
+            rampas.append((ta, tb, (vb - va) / (tb - ta)))
+    return degraus, rampas
+
+
+def resposta_historico(F, F_int, historico, tt):
+    """Superposição de Boltzmann exata para um histórico linear por trechos (F e F_int numéricas)."""
+    degraus, rampas = trechos(historico)
+    saida = np.zeros_like(tt)
+
+    def atrasada(f, a):
+        return np.where(tt >= a, f(np.maximum(tt - a, 0.0)), 0.0)
+
+    for a, salto in degraus:
+        saida += salto * atrasada(F, a)
+    for a, b, taxa in rampas:
+        saida += taxa * (atrasada(F_int, a) - atrasada(F_int, b))
+    return saida
+
+
+def expressoes_por_intervalo(F, F_int, historico, valores, max_intervalos=6):
+    """Expressões fechadas da resposta em cada intervalo entre pontos do histórico."""
+    degraus, rampas = trechos(historico)
+    cortes = sorted(set(historico[0]))
+    Fn, Fin = F.subs(valores), F_int.subs(valores)
+    saida = []
+    for c0, c1 in zip(cortes, cortes[1:] + [sp.oo]):
+        expr = sum(salto * Fn.subs(t, t - a) for a, salto in degraus if a <= c0)
+        for a, b, taxa in rampas:
+            if a <= c0:
+                expr += taxa * Fin.subs(t, t - a)
+            if b <= c0:
+                expr -= taxa * Fin.subs(t, t - b)
+        expr = arredondar(sp.expand(sp.sympify(expr)))
+        if saida and saida[-1][2] == expr:  # mesmo trecho: estende o intervalo anterior
+            saida[-1] = (saida[-1][0], c1, expr)
+        else:
+            saida.append((c0, c1, expr))
+    return saida[:max_intervalos]
 
 
 def simular(nome, ensaio, valores, tt, t_rem=None, omega=None, historico=None):
@@ -134,12 +206,14 @@ def simular(nome, ensaio, valores, tt, t_rem=None, omega=None, historico=None):
         sig = numerica(solucao_degrau(nome, "relaxacao")["saida_t"], valores)(tt)
         return sig, np.full_like(tt, float(valores[eps0]))
 
-    J = numerica(sp.expand(solucao_degrau(nome, "fluencia")["saida_t"] / sig0), valores)
-    if ensaio == "personalizado":
-        tempos, tensoes = historico
-        sig = np.interp(tt, tempos, tensoes, left=0.0)
-        return sig, boltzmann(J, tt, sig)
+    if ensaio in ("hist_tensao", "hist_deformacao"):
+        controle = "tensao" if ensaio == "hist_tensao" else "deformacao"
+        F, F_int = funcoes_hereditarias(nome, controle)
+        entrada = np.interp(tt, *historico, left=0.0)
+        saida = resposta_historico(numerica(F, valores), numerica(F_int, valores), historico, tt)
+        return (entrada, saida) if controle == "tensao" else (saida, entrada)
 
+    J = numerica(sp.expand(solucao_degrau(nome, "fluencia")["saida_t"] / sig0), valores)
     s0 = float(valores[sig0])
     if ensaio == "fluencia":
         return np.full_like(tt, s0), s0 * J(tt)
@@ -164,3 +238,15 @@ def componentes(nome, sig, eps, valores):
     e_mola = s_braco / Ev
     return {"Mola E∞": (eps, s_inf), "Mola E": (e_mola, s_braco),
             "Amortecedor η": (eps - e_mola, s_braco)}
+
+
+def energias(comp):
+    """Energia por unidade de volume (MJ/m3 = MPa): armazenada nas molas e dissipada no amortecedor."""
+    saida = {}
+    for rot, (e_c, s_c) in comp.items():
+        if rot.startswith("Mola"):
+            saida[f"Armazenada, {rot}"] = 0.5 * s_c * e_c
+        else:
+            trabalho = 0.5 * (s_c[1:] + s_c[:-1]) * np.diff(e_c)
+            saida[f"Dissipada, {rot}"] = np.concatenate([[0.0], np.cumsum(trabalho)])
+    return saida

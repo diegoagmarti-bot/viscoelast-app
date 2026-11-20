@@ -46,7 +46,7 @@ def geometria(nome, partes):
     x1 = partes[1]
     x2 = x1 + partes[2]
     elems.append((*mola(0, x2, 0.35), COR_MOLA, "E∞", x2 / 2, 0.65))
-    elems.append((*mola(0, x1, -0.35), COR_MOLA, "E1", x1 / 2, -0.05))
+    elems.append((*mola(0, x1, -0.35), COR_MOLA, "E", x1 / 2, -0.05))
     elems.append((*amortecedor(x1, x2, -0.35), COR_AMORT, "η", (x1 + x2) / 2, -0.05))
     return elems, x2, (-0.55, 0.55)
 
@@ -69,7 +69,7 @@ def tracos_esquema(nome, partes, forca):
         xs, simbolo = [ponta, xp + 0.15], "triangle-left"
     tracos.append(go.Scatter(x=xs, y=[0, 0], mode="lines+markers",
                              line=dict(color="#2B2B2B", width=2),
-                             marker=dict(symbol=simbolo, size=[0, 12], color="#2B2B2B"),
+                             marker=dict(symbol=simbolo, size=[0, 12 if abs(forca) > 0.02 else 0], color="#2B2B2B"),
                              hoverinfo="skip"))
     return tracos
 
@@ -80,11 +80,13 @@ def figura_animada(nome, tt, partes_hist, forca_hist, resposta, rotulo_resp, n_q
     partes_hist: lista de vetores de deformação de cada elemento, na ordem da geometria.
     forca_hist: tensão aplicada normalizada em [-1, 1].
     """
-    escala = max(np.max(np.abs(p)) for p in partes_hist) or 1.0
+    # cada elemento em sua própria escala, para que deformações pequenas também apareçam
+    maximo = max(np.max(np.abs(p)) for p in partes_hist) or 1.0
+    escalas = [max(np.max(np.abs(p)), 1e-6 * maximo) for p in partes_hist]
     idx = np.linspace(0, len(tt) - 1, n_quadros).astype(int)
 
     def partes_em(i):
-        return [_comprimento(p[i], escala) for p in partes_hist]
+        return [_comprimento(p[i], e) for p, e in zip(partes_hist, escalas)]
 
     fig = make_subplots(rows=2, cols=1, row_heights=[0.42, 0.58], vertical_spacing=0.1)
     # parede fixa
